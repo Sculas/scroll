@@ -1,12 +1,4 @@
-// this exists primarily to test various API usages of scroll; e.g., must compile
-
-// guard against potential undefined behaviour when borrowing from
-// packed structs. See https://github.com/rust-lang/rust/issues/46043
-#![deny(unaligned_references)]
-
-// #[macro_use] extern crate scroll_derive;
-
-use scroll::ctx::SizeWith;
+use scroll::ctx::SizeWith as _;
 use scroll::{ctx, Cread, Pread, Result};
 use std::ops::{Deref, DerefMut};
 
@@ -87,7 +79,7 @@ pub struct Segment<'a> {
 
 impl<'a> Segment<'a> {
     pub fn name(&self) -> Result<&str> {
-        Ok(self.segname.pread::<&str>(0)?)
+        self.segname.pread::<&str>(0)
     }
     pub fn sections(&self) -> Result<Vec<Section<'a>>> {
         let nsects = self.nsects as usize;
@@ -146,12 +138,12 @@ fn lifetime_passthrough_<'a>(segments: &Segments<'a>, section_name: &str) -> Opt
     let segment_name = "__TEXT";
     for segment in &segments.segments {
         if let Ok(name) = segment.name() {
-            println!("segment.name: {}", name);
+            println!("segment.name: {name}");
             if name == segment_name {
                 if let Ok(sections) = segment.sections() {
                     for section in sections {
                         let sname = section.name().unwrap();
-                        println!("section.name: {}", sname);
+                        println!("section.name: {sname}");
                         if section_name == sname {
                             return Some(section.data);
                         }
@@ -193,6 +185,7 @@ impl scroll::ctx::SizeWith<scroll::Endian> for Foo {
 }
 
 #[test]
+#[cfg(feature = "std")]
 fn ioread_api() {
     use scroll::{IOread, LE};
     use std::io::Cursor;

@@ -1,9 +1,10 @@
 name: CI
+
 on:
   push:
   pull_request:
-   branches:
-     - master
+    branches:
+      - master
 
 jobs:
   test:
@@ -13,9 +14,9 @@ jobs:
       matrix:
         build: [MSRV, stable, nightly, macos, win32, win64]
         include:
-          - build: MSRV # Minimum supported Rust version
+          - build: MSRV # Minimum supported Rust version, ensure it matches the rust-version in Cargo.toml
             os: ubuntu-latest
-            rust: 1.62.1
+            rust: 1.70
           - build: stable
             os: ubuntu-latest
             rust: stable
@@ -34,25 +35,26 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
-    - uses: actions/checkout@master
-    - name: Cache CARGO_HOME
-      uses: actions/cache@v1
-      with:
-        path: ~/.cargo
-        key: ${{ runner.os }}-cargo-home-${{ hashFiles('**/Cargo.toml') }}
-        restore-keys: ${{ runner.os }}-cargo-home
-    - name: Install Rust
-      shell: bash
-      run: |
-        curl -sSL https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain=none
-        export PATH="$HOME/.cargo/bin:$PATH"
-        rustup override set ${{ matrix.rust }}
-        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-    - name: rustfmt
-      shell: bash
-      if: runner.os == 'Linux' && matrix.rust == 'stable'
-      run: |
-        rustup component add rustfmt
-        cargo fmt -- --check
-    - run: cargo build
-    - run: cargo test
+      - uses: actions/checkout@master
+      - name: Cache CARGO_HOME
+        uses: actions/cache@v1
+        with:
+          path: ~/.cargo
+          key: ${{ runner.os }}-cargo-home-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-home
+      - name: Install Rust
+        shell: bash
+        run: |
+          curl -sSL https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain=none
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup override set ${{ matrix.rust }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: rustfmt
+        shell: bash
+        if: runner.os == 'Linux' && matrix.rust == 'stable'
+        run: |
+          rustup component add rustfmt
+          cargo fmt -- --check
+      - run: cargo build
+      - run: cargo test
+      - run: cargo test --no-default-features

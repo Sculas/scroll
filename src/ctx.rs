@@ -181,7 +181,6 @@
 //! ```
 
 use core::mem::size_of;
-use core::mem::transmute;
 use core::ptr::copy_nonoverlapping;
 use core::result;
 use core::str;
@@ -240,18 +239,14 @@ impl Default for StrCtx {
 
 impl StrCtx {
     pub fn len(&self) -> usize {
-        match *self {
+        match self {
             StrCtx::Delimiter(_) | StrCtx::DelimiterUntil(_, _) => 1,
             StrCtx::Length(_) => 0,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        if let StrCtx::Length(_) = *self {
-            true
-        } else {
-            false
-        }
+        matches!(self, StrCtx::Length(_))
     }
 }
 
@@ -267,6 +262,7 @@ pub trait FromCtx<Ctx: Copy = (), This: ?Sized = [u8]> {
 /// `[u8]`), then you need to implement this trait
 ///
 /// ```rust
+/// ##[cfg(feature = "std")] {
 /// use scroll::{self, ctx, Pread};
 /// #[derive(Debug, PartialEq, Eq)]
 /// pub struct Foo(u16);
@@ -286,6 +282,7 @@ pub trait FromCtx<Ctx: Copy = (), This: ?Sized = [u8]> {
 ///
 /// let foo2 = bytes.pread_with::<Foo>(0, scroll::BE).unwrap();
 /// assert_eq!(Foo(0xdeadu16), foo2);
+/// # }
 /// ```
 ///
 /// # Advanced: Using Your Own Error in `TryFromCtx`
@@ -350,6 +347,7 @@ pub trait IntoCtx<Ctx: Copy = (), This: ?Sized = [u8]>: Sized {
 /// To implement writing into an arbitrary byte buffer, implement `TryIntoCtx`
 /// # Example
 /// ```rust
+/// ##[cfg(feature = "std")] {
 /// use scroll::{self, ctx, LE, Endian, Pwrite};
 /// #[derive(Debug, PartialEq, Eq)]
 /// pub struct Foo(u16);
@@ -369,6 +367,7 @@ pub trait IntoCtx<Ctx: Copy = (), This: ?Sized = [u8]>: Sized {
 ///
 /// let mut bytes: [u8; 4] = [0, 0, 0, 0];
 /// bytes.pwrite_with(Foo(0x7f), 1, LE).unwrap();
+/// # }
 /// ```
 pub trait TryIntoCtx<Ctx: Copy = (), This: ?Sized = [u8]>: Sized {
     type Error;
@@ -405,11 +404,12 @@ macro_rules! write_into {
     ($typ:ty, $size:expr, $n:expr, $dst:expr, $endian:expr) => {{
         unsafe {
             assert!($dst.len() >= $size);
-            let bytes = transmute::<$typ, [u8; $size]>(if $endian.is_little() {
+            let bytes = if $endian.is_little() {
                 $n.to_le()
             } else {
                 $n.to_be()
-            });
+            }
+            .to_ne_bytes();
             copy_nonoverlapping((&bytes).as_ptr(), $dst.as_mut_ptr(), $size);
         }
     }};
@@ -570,7 +570,7 @@ macro_rules! from_ctx_float_impl {
                         &mut data as *mut signed_to_unsigned!($typ) as *mut u8,
                         $size,
                     );
-                    transmute(if le.is_little() {
+                    $typ::from_bits(if le.is_little() {
                         data.to_le()
                     } else {
                         data.to_be()
@@ -621,13 +621,7 @@ macro_rules! into_ctx_float_impl {
             #[inline]
             fn into_ctx(self, dst: &mut [u8], le: Endian) {
                 assert!(dst.len() >= $size);
-                write_into!(
-                    signed_to_unsigned!($typ),
-                    $size,
-                    transmute::<$typ, signed_to_unsigned!($typ)>(self),
-                    dst,
-                    le
-                );
+                write_into!(signed_to_unsigned!($typ), $size, self.to_bits(), dst, le);
             }
         }
         impl<'a> IntoCtx<Endian> for &'a $typ {
@@ -725,7 +719,7 @@ impl<'a> TryIntoCtx for &'a [u8] {
         let src_len = self.len() as isize;
         let dst_len = dst.len() as isize;
         // if src_len < 0 || dst_len < 0 || offset < 0 {
-        //     return Err(error::Error::BadOffset(format!("requested operation has negative casts: src len: {} dst len: {} offset: {}", src_len, dst_len, offset)).into())
+        //     return Err(error::Error::BadOffset(format!("requested operation has negative casts: src len: {src_len} dst len: {dst_len} offset: {offset}")).into())
         // }
         if src_len > dst_len {
             Err(error::Error::TooBig {
@@ -864,6 +858,7 @@ impl TryIntoCtx for CString {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "std")]
     use super::*;
 
     #[test]
