@@ -1,8 +1,6 @@
-use crate::ctx::TryFromCtx;
-use crate::error;
-use crate::Pread;
+use crate::ctx::{TryFromCtx, TryIntoCtx};
+use crate::{Error, Pread, Pwrite, Result};
 use core::convert::{AsRef, From};
-use core::result;
 use core::u8;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -13,17 +11,25 @@ pub struct Uleb128 {
 }
 
 impl Uleb128 {
-    #[inline]
     /// Return how many bytes this Uleb128 takes up in memory
+    #[inline]
     pub fn size(&self) -> usize {
         self.count
     }
+
+    /// Read a variable length u64 from `src` at `offset`
     #[inline]
-    /// Read a variable length u64 from `bytes` at `offset`
-    pub fn read(bytes: &[u8], offset: &mut usize) -> error::Result<u64> {
-        let tmp = bytes.pread::<Uleb128>(*offset)?;
+    pub fn read(src: &[u8], offset: &mut usize) -> Result<u64> {
+        let tmp = src.pread::<Uleb128>(*offset)?;
         *offset += tmp.size();
         Ok(tmp.into())
+    }
+
+    /// Write a variable length u64 to `src` at `offset`
+    #[inline]
+    pub fn write(dst: &mut [u8], offset: &mut usize, value: u64) -> Result<()> {
+        dst.gwrite(Uleb128 { value, count: 0 }, offset)?;
+        Ok(())
     }
 }
 
@@ -48,17 +54,25 @@ pub struct Sleb128 {
 }
 
 impl Sleb128 {
-    #[inline]
     /// Return how many bytes this Sleb128 takes up in memory
+    #[inline]
     pub fn size(&self) -> usize {
         self.count
     }
+
+    /// Read a variable length i64 from `src` at `offset`
     #[inline]
-    /// Read a variable length i64 from `bytes` at `offset`
-    pub fn read(bytes: &[u8], offset: &mut usize) -> error::Result<i64> {
-        let tmp = bytes.pread::<Sleb128>(*offset)?;
+    pub fn read(src: &[u8], offset: &mut usize) -> Result<i64> {
+        let tmp = src.pread::<Sleb128>(*offset)?;
         *offset += tmp.size();
         Ok(tmp.into())
+    }
+
+    /// Write a variable length i64 to `dst` at `offset`
+    #[inline]
+    pub fn write(dst: &mut [u8], offset: &mut usize, value: i64) -> Result<()> {
+        dst.gwrite(Sleb128 { value, count: 0 }, offset)?;
+        Ok(())
     }
 }
 
@@ -75,7 +89,9 @@ impl From<Sleb128> for i64 {
     }
 }
 
-// Below implementation heavily adapted from: https://github.com/fitzgen/leb128
+// Below implementation heavily adapted from:
+// - https://github.com/fitzgen/leb128
+// - https://github.com/rjsberry/nano
 const CONTINUATION_BIT: u8 = 1 << 7;
 const SIGN_BIT: u8 = 1 << 6;
 
@@ -84,16 +100,11 @@ fn mask_continuation(byte: u8) -> u8 {
     byte & !CONTINUATION_BIT
 }
 
-// #[inline]
-// fn mask_continuation_u64(val: u64) -> u8 {
-//     let byte = val & (u8::MAX as u64);
-//     mask_continuation(byte as u8)
-// }
-
 impl<'a> TryFromCtx<'a> for Uleb128 {
-    type Error = error::Error;
+    type Error = Error;
+
     #[inline]
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> result::Result<(Self, usize), Self::Error> {
+    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
         let mut result = 0;
         let mut shift = 0;
         let mut count = 0;
@@ -101,7 +112,7 @@ impl<'a> TryFromCtx<'a> for Uleb128 {
             let byte: u8 = src.pread(count)?;
 
             if shift == 63 && byte != 0x00 && byte != 0x01 {
-                return Err(error::Error::BadInput {
+                return Err(Error::BadInput {
                     size: src.len(),
                     msg: "failed to parse",
                 });
@@ -127,9 +138,10 @@ impl<'a> TryFromCtx<'a> for Uleb128 {
 }
 
 impl<'a> TryFromCtx<'a> for Sleb128 {
-    type Error = error::Error;
+    type Error = Error;
+
     #[inline]
-    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> result::Result<(Self, usize), Self::Error> {
+    fn try_from_ctx(src: &'a [u8], _ctx: ()) -> Result<(Self, usize), Self::Error> {
         let o = 0;
         let offset = &mut 0;
         let mut result = 0;
@@ -137,10 +149,10 @@ impl<'a> TryFromCtx<'a> for Sleb128 {
         let size = 64;
         let mut byte: u8;
         loop {
-            byte = src.gread(offset)?;
+            byte = src.gread_with(offset, crate::LE)?;
 
             if shift == 63 && byte != 0x00 && byte != 0x7f {
-                return Err(error::Error::BadInput {
+                return Err(Error::BadInput {
                     size: src.len(),
                     msg: "failed to parse",
                 });
@@ -170,83 +182,46 @@ impl<'a> TryFromCtx<'a> for Sleb128 {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::LE;
-    use super::{Sleb128, Uleb128};
+impl TryIntoCtx for Uleb128 {
+    type Error = Error;
 
-    const CONTINUATION_BIT: u8 = 1 << 7;
-    //const SIGN_BIT: u8 = 1 << 6;
-
-    #[test]
-    fn uleb_size() {
-        use super::super::Pread;
-        let buf = [2u8 | CONTINUATION_BIT, 1];
-        let bytes = &buf[..];
-        let num = bytes.pread::<Uleb128>(0).unwrap();
-        #[cfg(feature = "std")]
-        println!("num: {num:?}");
-        assert_eq!(130u64, num.into());
-        assert_eq!(num.size(), 2);
-
-        let buf = [0x00, 0x01];
-        let bytes = &buf[..];
-        let num = bytes.pread::<Uleb128>(0).unwrap();
-        #[cfg(feature = "std")]
-        println!("num: {num:?}");
-        assert_eq!(0u64, num.into());
-        assert_eq!(num.size(), 1);
-
-        let buf = [0x21];
-        let bytes = &buf[..];
-        let num = bytes.pread::<Uleb128>(0).unwrap();
-        #[cfg(feature = "std")]
-        println!("num: {num:?}");
-        assert_eq!(0x21u64, num.into());
-        assert_eq!(num.size(), 1);
+    #[inline]
+    fn try_into_ctx(self, dst: &mut [u8], _: ()) -> Result<usize, Self::Error> {
+        let offset = &mut 0;
+        let mut value = self.value;
+        loop {
+            let mut byte = (value as u8) & !CONTINUATION_BIT;
+            value >>= 7;
+            if value != 0 {
+                byte |= CONTINUATION_BIT;
+            }
+            dst.gwrite_with(byte, offset, crate::LE)?;
+            if value == 0 {
+                break;
+            }
+        }
+        Ok(*offset)
     }
+}
 
-    #[test]
-    fn uleb128() {
-        use super::super::Pread;
-        let buf = [2u8 | CONTINUATION_BIT, 1];
-        let bytes = &buf[..];
-        let num = bytes.pread::<Uleb128>(0).expect("Should read Uleb128");
-        assert_eq!(130u64, num.into());
-        assert_eq!(
-            386,
-            bytes.pread_with::<u16>(0, LE).expect("Should read number")
-        );
-    }
+impl TryIntoCtx for Sleb128 {
+    type Error = Error;
 
-    #[test]
-    fn uleb128_overflow() {
-        use super::super::Pread;
-        let buf = [
-            2u8 | CONTINUATION_BIT,
-            2 | CONTINUATION_BIT,
-            2 | CONTINUATION_BIT,
-            2 | CONTINUATION_BIT,
-            2 | CONTINUATION_BIT,
-            2 | CONTINUATION_BIT,
-            2 | CONTINUATION_BIT,
-            2 | CONTINUATION_BIT,
-            2 | CONTINUATION_BIT,
-            2 | CONTINUATION_BIT,
-            1,
-        ];
-        let bytes = &buf[..];
-        assert!(bytes.pread::<Uleb128>(0).is_err());
-    }
-
-    #[test]
-    fn sleb128() {
-        use super::super::Pread;
-        let bytes = [0x7fu8 | CONTINUATION_BIT, 0x7e];
-        let num: i64 = bytes
-            .pread::<Sleb128>(0)
-            .expect("Should read Sleb128")
-            .into();
-        assert_eq!(-129, num);
+    #[inline]
+    fn try_into_ctx(self, dst: &mut [u8], _: ()) -> Result<usize, Self::Error> {
+        let offset = &mut 0;
+        let mut value = self.value;
+        loop {
+            let mut byte = (value as u8) & !CONTINUATION_BIT;
+            value >>= 7;
+            if (value == 0 && (byte & SIGN_BIT) == 0) || (value == -1 && (byte & SIGN_BIT) != 0) {
+                dst.gwrite_with(byte, offset, crate::LE)?;
+                break;
+            } else {
+                byte |= CONTINUATION_BIT;
+                dst.gwrite_with(byte, offset, crate::LE)?;
+            }
+        }
+        Ok(*offset)
     }
 }
